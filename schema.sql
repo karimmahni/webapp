@@ -3,7 +3,7 @@
 --   Tables : trips (trajets), reservations (réservations)
 -- ===========================================================
 
-USE convoit;
+USE covoit;
 
 -- On désactive temporairement les contraintes de clé étrangère
 SET FOREIGN_KEY_CHECKS = 0;
