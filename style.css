@@ -1,0 +1,36 @@
+body {
+  font-family: Arial, sans-serif;
+  margin: 30px;
+}
+
+h1, h2 {
+  color: #333;
+}
+
+form {
+  margin: 10px 0;
+}
+
+input {
+  margin: 3px 0;
+}
+
+button {
+  margin-top: 5px;
+  padding: 4px 10px;
+}
+
+ul {
+  list-style-type: none;
+  padding-left: 0;
+}
+
+li {
+  margin-bottom: 20px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #ccc;
+}
+
+.res-form {
+  margin-top: 5px;
+}
