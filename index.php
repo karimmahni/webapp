@@ -1,112 +1,217 @@
 <?php
-require __DIR__ . '/db.php';
+// index.php
+require 'db.php';
 
-// Ajout trajet
-if (isset($_POST['add_trajet'])) {
-    $stmt = $pdo->prepare(
-        "INSERT INTO trajets (conducteur, depart, arrivee, places, date_trajet)
-         VALUES (:conducteur, :depart, :arrivee, :places, :date_trajet)"
-    );
-    $stmt->execute([
-        ':conducteur'   => $_POST['conducteur'] ?? '',
-        ':depart'       => $_POST['depart'] ?? '',
-        ':arrivee'      => $_POST['arrivee'] ?? '',
-        ':places'       => (int)($_POST['places'] ?? 0),
-        ':date_trajet'  => $_POST['date_trajet'] ?? '',
-    ]);
+$message = '';
+
+// Traitement des formulaires
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
+
+    if ($action === 'add_trip') {
+        // Récupération des champs
+        $driver_name   = trim($_POST['driver_name'] ?? '');
+        $driver_email  = trim($_POST['driver_email'] ?? '');
+        $driver_idafpa = trim($_POST['driver_idafpa'] ?? '');
+        $from_city     = trim($_POST['from_city'] ?? '');
+        $to_city       = trim($_POST['to_city'] ?? '');
+        $trip_date     = $_POST['trip_date'] ?? '';
+        $trip_time     = $_POST['trip_time'] ?? '';
+        $seats_total   = (int)($_POST['seats_total'] ?? 0);
+
+        if ($driver_name && $driver_email && $driver_idafpa && $from_city && $to_city && $trip_date && $trip_time && $seats_total > 0) {
+            $stmt = $pdo->prepare("
+                INSERT INTO trips 
+                (driver_name, driver_email, driver_idafpa, from_city, to_city, trip_date, trip_time, seats_total) 
+                VALUES 
+                (:driver_name, :driver_email, :driver_idafpa, :from_city, :to_city, :trip_date, :trip_time, :seats_total)
+            ");
+            $stmt->execute([
+                ':driver_name'   => $driver_name,
+                ':driver_email'  => $driver_email,
+                ':driver_idafpa' => $driver_idafpa,
+                ':from_city'     => $from_city,
+                ':to_city'       => $to_city,
+                ':trip_date'     => $trip_date,
+                ':trip_time'     => $trip_time,
+                ':seats_total'   => $seats_total,
+            ]);
+            $message = "Trajet ajouté avec succès.";
+        } else {
+            $message = "Merci de remplir tous les champs du trajet.";
+        }
+    }
+
+    if ($action === 'reserve') {
+        $trip_id          = (int)($_POST['trip_id'] ?? 0);
+        $passenger_name   = trim($_POST['passenger_name'] ?? '');
+        $passenger_email  = trim($_POST['passenger_email'] ?? '');
+        $passenger_idafpa = trim($_POST['passenger_idafpa'] ?? '');
+        $seats_requested  = (int)($_POST['seats'] ?? 0);
+
+        if ($trip_id > 0 && $passenger_name && $passenger_email && $passenger_idafpa && $seats_requested > 0) {
+
+            // Récupérer le trajet pour connaître les places dispo
+            $stmt = $pdo->prepare("SELECT * FROM trips WHERE id = :id");
+            $stmt->execute([':id' => $trip_id]);
+            $trip = $stmt->fetch();
+
+            if ($trip) {
+                $available = $trip['seats_total'] - $trip['seats_taken'];
+
+                if ($seats_requested <= $available) {
+                    // 1) Insérer la réservation
+                    $pdo->beginTransaction();
+
+                    try {
+                        $stmt = $pdo->prepare("
+                            INSERT INTO reservations (trip_id, passenger_name, passenger_email, passenger_idafpa, seats)
+                            VALUES (:trip_id, :passenger_name, :passenger_email, :passenger_idafpa, :seats)
+                        ");
+                        $stmt->execute([
+                            ':trip_id'          => $trip_id,
+                            ':passenger_name'   => $passenger_name,
+                            ':passenger_email'  => $passenger_email,
+                            ':passenger_idafpa' => $passenger_idafpa,
+                            ':seats'            => $seats_requested,
+                        ]);
+
+                        // 2) Mettre à jour le nombre de places prises
+                        $stmt = $pdo->prepare("
+                            UPDATE trips 
+                            SET seats_taken = seats_taken + :seats 
+                            WHERE id = :id
+                        ");
+                        $stmt->execute([
+                            ':seats' => $seats_requested,
+                            ':id'    => $trip_id,
+                        ]);
+
+                        $pdo->commit();
+                        $message = "Réservation enregistrée.";
+                    } catch (Exception $e) {
+                        $pdo->rollBack();
+                        $message = "Erreur lors de la réservation : " . htmlspecialchars($e->getMessage());
+                    }
+
+                } else {
+                    $message = "Pas assez de places disponibles pour ce trajet.";
+                }
+            } else {
+                $message = "Trajet introuvable.";
+            }
+        } else {
+            $message = "Merci de remplir tous les champs de réservation.";
+        }
+    }
 }
 
-// Ajout réservation
-if (isset($_POST['add_reservation'])) {
-    $stmt = $pdo->prepare(
-        "INSERT INTO reservations (trajet_id, nom_passager, places_reservees)
-         VALUES (:trajet_id, :nom_passager, :places_reservees)"
-    );
-    $stmt->execute([
-        ':trajet_id'        => (int)($_POST['trajet_id'] ?? 0),
-        ':nom_passager'     => $_POST['nom_passager'] ?? '',
-        ':places_reservees' => (int)($_POST['places_reservees'] ?? 0),
-    ]);
-}
+// Récupération des trajets à afficher (ex : à partir d'aujourd'hui)
+$stmt = $pdo->query("
+    SELECT * 
+    FROM trips 
+    ORDER BY trip_date ASC, trip_time ASC
+");
+$trips = $stmt->fetchAll();
 
-// Récup trajets + nb places réservées
-$sql = "
-    SELECT t.id, t.conducteur, t.depart, t.arrivee, t.places, t.date_trajet,
-           COALESCE(SUM(r.places_reservees), 0) AS places_reservees
-    FROM trajets t
-    LEFT JOIN reservations r ON r.trajet_id = t.id
-    GROUP BY t.id, t.conducteur, t.depart, t.arrivee, t.places, t.date_trajet
-    ORDER BY t.date_trajet ASC
-";
-$trajets = $pdo->query($sql)->fetchAll();
 ?>
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <title>Covoiturage – Karim</title>
+    <title>Mini covoiturage AFPA</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<h1>Covoiturage – Karim</h1>
+<h1>Mini covoiturage AFPA</h1>
 
-<section>
-    <h2>Créer un trajet</h2>
-    <form method="POST">
-        <label>Conducteur :
-            <input type="text" name="conducteur" required>
-        </label><br>
-        <label>Départ :
-            <input type="text" name="depart" required>
-        </label><br>
-        <label>Arrivée :
-            <input type="text" name="arrivee" required>
-        </label><br>
-        <label>Places :
-            <input type="number" name="places" min="1" required>
-        </label><br>
+<?php if ($message): ?>
+    <div class="message">
+        <?= htmlspecialchars($message) ?>
+    </div>
+<?php endif; ?>
+
+<section class="card">
+    <h2>Proposer un trajet</h2>
+    <form method="post">
+        <input type="hidden" name="action" value="add_trip">
+
+        <h3>Vos infos</h3>
+        <label>Nom d'affichage :
+            <input type="text" name="driver_name" required>
+        </label>
+        <label>Email :
+            <input type="email" name="driver_email" required>
+        </label>
+        <label>ID AFPA :
+            <input type="text" name="driver_idafpa" required>
+        </label>
+
+        <h3>Trajet</h3>
+        <label>Ville de départ :
+            <input type="text" name="from_city" required>
+        </label>
+        <label>Ville d'arrivée :
+            <input type="text" name="to_city" required>
+        </label>
         <label>Date :
-            <input type="date" name="date_trajet" required>
-        </label><br>
-        <button type="submit" name="add_trajet">Ajouter le trajet</button>
+            <input type="date" name="trip_date" required>
+        </label>
+        <label>Heure :
+            <input type="time" name="trip_time" required>
+        </label>
+        <label>Nombre de places :
+            <input type="number" name="seats_total" min="1" required>
+        </label>
+
+        <button type="submit">Publier le trajet</button>
     </form>
 </section>
 
-<section>
+<section class="card">
     <h2>Trajets disponibles</h2>
-    <?php if (empty($trajets)): ?>
+
+    <?php if (empty($trips)): ?>
         <p>Aucun trajet pour le moment.</p>
     <?php else: ?>
-        <ul>
-        <?php foreach ($trajets as $t): 
-            $places_restantes = $t['places'] - $t['places_reservees'];
+        <?php foreach ($trips as $trip): 
+            $available = $trip['seats_total'] - $trip['seats_taken'];
         ?>
-            <li>
-                <strong><?= htmlspecialchars($t['conducteur']) ?></strong> :
-                <?= htmlspecialchars($t['depart']) ?> → <?= htmlspecialchars($t['arrivee']) ?>
-                (<?= (int)$t['places'] ?> places, le <?= htmlspecialchars($t['date_trajet']) ?>)<br>
-                Réservées : <?= (int)$t['places_reservees'] ?> /
-                Restantes : <?= $places_restantes ?>
+            <div class="trip">
+                <div class="trip-info">
+                    <strong><?= htmlspecialchars($trip['from_city']) ?> → <?= htmlspecialchars($trip['to_city']) ?></strong><br>
+                    Le <?= htmlspecialchars($trip['trip_date']) ?> à <?= htmlspecialchars(substr($trip['trip_time'], 0, 5)) ?><br>
+                    Conducteur : <?= htmlspecialchars($trip['driver_name']) ?> (<?= htmlspecialchars($trip['driver_email']) ?>)<br>
+                    Places : <?= (int)$trip['seats_total'] ?> au total, 
+                    <?= (int)$available ?> restantes
+                </div>
 
-                <?php if ($places_restantes > 0): ?>
-                    <form method="POST" class="res-form">
-                        <input type="hidden" name="trajet_id" value="<?= (int)$t['id'] ?>">
-                        <label>Nom passager :
-                            <input type="text" name="nom_passager" required>
+                <?php if ($available > 0): ?>
+                    <form method="post" class="reserve-form">
+                        <input type="hidden" name="action" value="reserve">
+                        <input type="hidden" name="trip_id" value="<?= (int)$trip['id'] ?>">
+
+                        <h4>Réserver</h4>
+                        <label>Nom d'affichage :
+                            <input type="text" name="passenger_name" required>
                         </label>
-                        <label>Places :
-                            <input type="number" name="places_reservees"
-                                   min="1" max="<?= $places_restantes ?>" required>
+                        <label>Email :
+                            <input type="email" name="passenger_email" required>
                         </label>
-                        <button type="submit" name="add_reservation">Réserver</button>
+                        <label>ID AFPA :
+                            <input type="text" name="passenger_idafpa" required>
+                        </label>
+                        <label>Places à réserver :
+                            <input type="number" name="seats" min="1" max="<?= (int)$available ?>" required>
+                        </label>
+                        <button type="submit">Réserver</button>
                     </form>
                 <?php else: ?>
-                    <p>Plus de places disponibles.</p>
+                    <p class="full">Complet</p>
                 <?php endif; ?>
-            </li>
+            </div>
         <?php endforeach; ?>
-        </ul>
     <?php endif; ?>
 </section>
 
